@@ -19,51 +19,58 @@ const getStat = async (page, statIdentifier) => {
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  const baseUrl = `https://tier-zoo.fandom.com/`;
+  const baseUrl = `https://tier-zoo.fandom.com`;
 
-  await page.goto(`${baseUrl}/wiki/Category:Builds`, { timeout: 240000 });
+  let nextLink = `${baseUrl}/wiki/Category:Builds`;
 
-  await page.waitForSelector(".category-page__member-link");
+  while (nextLink) {
+    console.log(nextLink);
+    await page.goto(nextLink, { timeout: 240000 });
 
-  const buildList = await page.$$(`.category-page__member-link`);
+    await page.waitForSelector(".category-page__member-link");
 
-  let builds = [];
+    const buildList = await page.$$(`.category-page__member-link`);
 
-  for (const build of buildList) {
-    const page = await context.newPage();
+    let builds = [];
 
-    const link = await build.getAttribute(`href`);
-    await page.goto(`${baseUrl}${link}`);
+    for (const build of buildList) {
+      const page = await context.newPage();
 
-    const nameElement = await page.$(`.mw-page-title-main`);
-    const name = await nameElement.textContent();
+      const link = await build.getAttribute(`href`);
+      await page.goto(`${baseUrl}${link}`, { timeout: 240000 });
 
-    const intelligence = await getStat(page, "intelligentice");
-    const power = await getStat(page, "power");
-    const defense = await getStat(page, "defence");
-    const mobility = await getStat(page, "mobility");
-    const health = await getStat(page, "health");
-    const stealth = await getStat(page, "stealth");
-    const tier = await getStat(page, "tier");
-    const server = await getStat(page, "location");
-    const time = await getStat(page, "time_period");
+      const nameElement = await page.$(`.mw-page-title-main`);
+      const name = await nameElement.textContent();
+      const intelligence = await getStat(page, "intelligentice");
+      const power = await getStat(page, "power");
+      const defense = await getStat(page, "defence");
+      const mobility = await getStat(page, "mobility");
+      const health = await getStat(page, "health");
+      const stealth = await getStat(page, "stealth");
+      const tier = await getStat(page, "tier");
+      const server = await getStat(page, "location");
+      const time = await getStat(page, "time_period");
 
-    builds.push({
-      name,
-      intelligence,
-      power,
-      defense,
-      mobility,
-      health,
-      stealth,
-      tier,
-      server,
-      time,
-    });
+      builds.push({
+        name,
+        intelligence,
+        power,
+        defense,
+        mobility,
+        health,
+        stealth,
+        tier,
+        server,
+        time,
+      });
 
-    await page.close();
+      await page.close();
+    }
+
+    await page.waitForSelector(`.category-page__pagination-next`);
+    const nextButton = await page.$(`.category-page__pagination-next`);
+    nextLink = await nextButton.getAttribute(`href`);
   }
-
   await page.goto(`https://chat.openai.com/`, { timeout: 300000 });
 
   await page.waitForSelector("button");
