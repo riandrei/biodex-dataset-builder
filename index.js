@@ -1,7 +1,8 @@
-require("dotenv").config();
-const { firefox } = require("playwright");
+import "dotenv/config";
+import { firefox } from "playwright";
+import Build from "./Build.mjs";
 
-const getStat = async (page, statIdentifier) => {
+async function getStat(page, statIdentifier) {
   const statContainer = await page.$(`div[data-source="${statIdentifier}"]`);
 
   if (statContainer === null) {
@@ -12,7 +13,21 @@ const getStat = async (page, statIdentifier) => {
   const stat = await statElement.textContent();
 
   return stat;
-};
+}
+
+async function buildExists(name) {
+  try {
+    const existingBuild = await Build.findOne({ name });
+    if (existingBuild) {
+      console.log(`Build already exists`, name);
+      return true;
+    } else {
+      return false;
+    }
+  } catch (error) {
+    console.error("Error checking document existence:", error);
+  }
+}
 
 (async () => {
   const browser = await firefox.launch({ headless: true });
@@ -31,16 +46,20 @@ const getStat = async (page, statIdentifier) => {
 
     const buildList = await page.$$(`.category-page__member-link`);
 
-    let builds = [];
-
     for (const build of buildList) {
       const page = await context.newPage();
 
       const link = await build.getAttribute(`href`);
+
       await page.goto(`${baseUrl}${link}`, { timeout: 240000 });
 
       const nameElement = await page.$(`.mw-page-title-main`);
       const name = await nameElement.textContent();
+
+      if (await buildExists(name)) {
+        continue;
+      }
+
       const intelligence = await getStat(page, "intelligentice");
       const power = await getStat(page, "power");
       const defense = await getStat(page, "defence");
@@ -51,7 +70,7 @@ const getStat = async (page, statIdentifier) => {
       const server = await getStat(page, "location");
       const time = await getStat(page, "time_period");
 
-      builds.push({
+      const newBuild = new Build({
         name,
         intelligence,
         power,
@@ -64,6 +83,13 @@ const getStat = async (page, statIdentifier) => {
         time,
       });
 
+      try {
+        await newBuild.save();
+        console.log("Build saved successfully", name);
+      } catch (error) {
+        console.error("Error saving build:", error);
+      }
+
       await page.close();
     }
 
@@ -71,6 +97,7 @@ const getStat = async (page, statIdentifier) => {
     const nextButton = await page.$(`.category-page__pagination-next`);
     nextLink = await nextButton.getAttribute(`href`);
   }
+
   await page.goto(`https://chat.openai.com/`, { timeout: 300000 });
 
   await page.waitForSelector("button");
@@ -118,7 +145,7 @@ const getStat = async (page, statIdentifier) => {
   1. The Domestic sheep is an F tier build playable in every server but Antarctica. Sheep are F tier because they are unable to live in the wild without a build protecting it. They are not stealthy and are unable to protect themselves. They get eliminated by bramble bushes (their prey) and have decent stats but can’t put them to good use. They are also farmed for usage by human mains.
   2. The aardvark is a build that is playable on the Savannah server. They are one of the key stone players as they are responsible for making burrows, which other players live in.
   3. The Painted Dog also know as the 'Cape Hunting Dog', 'Tricoloured Dog' or simply 'Wild Dog', is a highly social predator that hunts in large packs across the plains and bushland servers of Africa. They are arguably the most social of all canine builds, hunting in large packs which in past times possibly numbered in the hundreds.
-  
+
   Every prompt after this one is going to be names of an animal or a plant. Create a concise, at most 3 sentences, description based on the reference paragraphs after I've inputted the name.`;
 
   await textarea.fill(initialPrompt);
@@ -135,6 +162,8 @@ const getStat = async (page, statIdentifier) => {
       response.url() === "https://chat.openai.com/backend-api/moderations" &&
       response.status() === 200
   );
+
+  const builds = await Build.find({});
 
   for (const [index, build] of builds.entries()) {
     textarea.fill(build.name);
@@ -163,8 +192,6 @@ const getStat = async (page, statIdentifier) => {
     temporaryBuilds[index].description = descriptionText;
     builds = temporaryBuilds;
   }
-
-  console.log(builds);
 
   await browser.close();
 })();
