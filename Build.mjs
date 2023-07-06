@@ -15,6 +15,8 @@ const BuildSchema = new Schema({
   tier: String,
   server: String,
   time: String,
+  description: String,
+  imageUrl: String,
 });
 
 const Build = mongoose.model("build", BuildSchema);

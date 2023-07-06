@@ -2,6 +2,205 @@ import "dotenv/config";
 import { firefox } from "playwright";
 import Build from "./Build.mjs";
 
+const resourceExclusions = ["image", "stylesheet", "media", "font", "other"];
+const baseUrl = `https://tier-zoo.fandom.com`;
+
+(async () => {
+  const browser = await firefox.launch();
+  let context = await browser.newContext({
+    javaScriptEnabled: false,
+    viewport: null,
+  });
+
+  let page = await context.newPage();
+  await page.route("**/*", (route) => {
+    return resourceExclusions.includes(route.request().resourceType())
+      ? route.abort()
+      : route.continue();
+  });
+
+  let nextLink = `${baseUrl}/wiki/Category:Builds`;
+
+  const buildPromises = [];
+
+  while (nextLink) {
+    await page.goto(nextLink, { timeout: 240000 });
+
+    await page.waitForSelector(".category-page__member-link");
+    const buildList = await page.$$(`.category-page__member-link`);
+
+    for (const build of buildList) {
+      const link = await build.getAttribute(`href`);
+      let name = link.slice(6, link.length).replaceAll("_", " ");
+      name = name.replaceAll("%27", "'");
+
+      if (await buildExists(name)) {
+        continue;
+      }
+
+      buildPromises.push(
+        (async () => {
+          const buildPage = await context.newPage();
+          await buildPage.goto(`${baseUrl}${link}`, { timeout: 240000 });
+
+          const intelligence = await getStat(buildPage, "intelligentice");
+          const power = await getStat(buildPage, "power");
+          const defense = await getStat(buildPage, "defence");
+          const mobility = await getStat(buildPage, "mobility");
+          const health = await getStat(buildPage, "health");
+          const stealth = await getStat(buildPage, "stealth");
+          const tier = await getStat(buildPage, "tier");
+          const server = await getStat(buildPage, "location");
+          const time = await getStat(buildPage, "time_period");
+
+          let imageUrl = "";
+
+          try {
+            await buildPage.waitForSelector(".pi-image-thumbnail");
+            const imageContainer = await buildPage.$(".pi-image-thumbnail");
+            imageUrl = await imageContainer.getAttribute("src");
+          } catch (error) {
+            imageUrl = null;
+            console.log("Couldn't find image:", name);
+          }
+
+          if (!tier) {
+            console.log("Not saving:", name);
+            return;
+          }
+
+          const newBuild = new Build({
+            name,
+            intelligence,
+            power,
+            defense,
+            mobility,
+            health,
+            stealth,
+            tier,
+            server,
+            time,
+            imageUrl,
+          });
+
+          try {
+            await newBuild.save();
+            console.log("Build saved successfully:", name);
+          } catch (error) {
+            console.error("Error saving build:", error);
+          }
+
+          await buildPage.close();
+        })()
+      );
+    }
+
+    try {
+      await page.waitForSelector(`.category-page__pagination-next`);
+      const nextButton = await page.$(`.category-page__pagination-next`);
+      nextLink = await nextButton.getAttribute(`href`);
+    } catch (err) {
+      nextLink = null;
+    }
+  }
+
+  await Promise.all(buildPromises);
+  page.close();
+  context.close();
+
+  context = await browser.newContext({
+    viewport: null,
+  });
+
+  page = await context.newPage();
+  await page.route("**/*", (route) => {
+    return resourceExclusions.includes(route.request().resourceType())
+      ? route.abort()
+      : route.continue();
+  });
+
+  await page.goto(`https://chat.openai.com/`, { timeout: 240000 });
+
+  await page.waitForLoadState();
+
+  const waitForAndClick = async (page, selector, timeout) => {
+    await page.waitForSelector(selector, { timeout });
+    const button = await page.$(selector);
+    await button.click();
+    await page.waitForLoadState();
+  };
+
+  await waitForAndClick(page, "button");
+
+  await page.waitForSelector("#username");
+  const usernameInput = await page.$(`#username`);
+  await usernameInput.fill(process.env.EMAIL);
+
+  await waitForAndClick(page, "button");
+
+  await page.waitForSelector(`#password`);
+  const passwordInput = await page.$(`#password`);
+  await passwordInput.fill(process.env.PASSWORD);
+
+  await waitForAndClick(page, `._button-login-password`);
+
+  await waitForAndClick(page, ".btn.relative.ml-auto");
+  await waitForAndClick(page, ".btn.relative.ml-auto");
+  await waitForAndClick(page, ".btn.relative.ml-auto");
+
+  const textarea = await page.$(`#prompt-textarea`);
+  const initialPrompt = `Reference Paragraphs:
+  1. The Domestic sheep is an F tier build playable in every server but Antarctica. Sheep are F tier because they are unable to live in the wild without a build protecting it. They are not stealthy and are unable to protect themselves. They get eliminated by bramble bushes (their prey) and have decent stats but can’t put them to good use. They are also farmed for usage by human mains.
+  2. The aardvark is a build that is playable on the Savannah server. They are one of the key stone players as they are responsible for making burrows, which other players live in.
+  3. The Painted Dog also know as the 'Cape Hunting Dog', 'Tricoloured Dog' or simply 'Wild Dog', is a highly social predator that hunts in large packs across the plains and bushland servers of Africa. They are arguably the most social of all canine builds, hunting in large packs which in past times possibly numbered in the hundreds.
+
+  Every prompt after this one is going to be names of an animal or a plant. Create a concise, at most 3 sentences, description based on the reference paragraphs after I've inputted the name.`;
+  await textarea.fill(initialPrompt);
+
+  await waitForAndClick(page, ".absolute.p-1");
+
+  const builds = await Build.find({});
+
+  for (const build of builds) {
+    if (build.description) {
+      console.log(build.name, " description already exists");
+      continue;
+    } else {
+      await textarea.fill(build.name);
+
+      await waitForAndClick(page, ".absolute.p-1");
+
+      await page.waitForResponse(
+        (response) =>
+          response.url() ===
+            "https://chat.openai.com/backend-api/moderations" &&
+          response.status() === 200
+      );
+
+      await page.waitForTimeout(50000);
+
+      await page.waitForSelector(`.markdown`);
+
+      const descriptionContainers = await page.$$(`.markdown`);
+      const descriptionContainer =
+        descriptionContainers[descriptionContainers.length - 1];
+      const descriptionElement = await descriptionContainer.$(`p`);
+      const description = await descriptionElement.textContent();
+
+      try {
+        await Build.updateOne({ name: build.name }, { description });
+        console.log("Description added successfully:", build.name);
+      } catch (error) {
+        console.error("Error updating build:", error);
+      }
+    }
+  }
+
+  await page.close();
+  await context.close();
+  await browser.close();
+})();
+
 async function getStat(page, statIdentifier) {
   const statContainer = await page.$(`div[data-source="${statIdentifier}"]`);
 
@@ -28,170 +227,3 @@ async function buildExists(name) {
     console.error("Error checking document existence:", error);
   }
 }
-
-(async () => {
-  const browser = await firefox.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
-
-  const baseUrl = `https://tier-zoo.fandom.com`;
-
-  let nextLink = `${baseUrl}/wiki/Category:Builds`;
-
-  while (nextLink) {
-    console.log(nextLink);
-    await page.goto(nextLink, { timeout: 240000 });
-
-    await page.waitForSelector(".category-page__member-link");
-
-    const buildList = await page.$$(`.category-page__member-link`);
-
-    for (const build of buildList) {
-      const page = await context.newPage();
-
-      const link = await build.getAttribute(`href`);
-
-      await page.goto(`${baseUrl}${link}`, { timeout: 240000 });
-
-      const nameElement = await page.$(`.mw-page-title-main`);
-      const name = await nameElement.textContent();
-
-      if (await buildExists(name)) {
-        continue;
-      }
-
-      const intelligence = await getStat(page, "intelligentice");
-      const power = await getStat(page, "power");
-      const defense = await getStat(page, "defence");
-      const mobility = await getStat(page, "mobility");
-      const health = await getStat(page, "health");
-      const stealth = await getStat(page, "stealth");
-      const tier = await getStat(page, "tier");
-      const server = await getStat(page, "location");
-      const time = await getStat(page, "time_period");
-
-      const newBuild = new Build({
-        name,
-        intelligence,
-        power,
-        defense,
-        mobility,
-        health,
-        stealth,
-        tier,
-        server,
-        time,
-      });
-
-      try {
-        await newBuild.save();
-        console.log("Build saved successfully", name);
-      } catch (error) {
-        console.error("Error saving build:", error);
-      }
-
-      await page.close();
-    }
-
-    await page.waitForSelector(`.category-page__pagination-next`);
-    const nextButton = await page.$(`.category-page__pagination-next`);
-    nextLink = await nextButton.getAttribute(`href`);
-  }
-
-  await page.goto(`https://chat.openai.com/`, { timeout: 300000 });
-
-  await page.waitForSelector("button");
-  const loginButton = await page.$("button");
-
-  await loginButton.click();
-
-  await page.waitForSelector("#username");
-  const usernameInput = await page.$(`#username`);
-
-  await usernameInput.fill(process.env.EMAIL);
-
-  await page.waitForSelector(`button`);
-  const continueButton = await page.$("button");
-
-  await continueButton.click();
-
-  await page.waitForSelector(`#password`);
-  const passwordInput = await page.$(`#password`);
-
-  await passwordInput.fill(process.env.PASSWORD);
-
-  await page.waitForSelector(`._button-login-password`);
-  const signInButton = await page.$("._button-login-password");
-
-  await signInButton.click();
-
-  await page.waitForSelector(`.btn.relative.ml-auto`);
-  let nextButton = await page.$(`.btn.relative.ml-auto`);
-
-  await nextButton.click();
-
-  nextButton = await page.$(`.btn.relative.ml-auto`);
-
-  await nextButton.click();
-
-  nextButton = await page.$(`.btn.relative.ml-auto`);
-
-  await nextButton.click();
-
-  await page.waitForSelector(`#prompt-textarea`);
-  const textarea = await page.$(`#prompt-textarea`);
-
-  const initialPrompt = `Reference Paragraphs:
-  1. The Domestic sheep is an F tier build playable in every server but Antarctica. Sheep are F tier because they are unable to live in the wild without a build protecting it. They are not stealthy and are unable to protect themselves. They get eliminated by bramble bushes (their prey) and have decent stats but can’t put them to good use. They are also farmed for usage by human mains.
-  2. The aardvark is a build that is playable on the Savannah server. They are one of the key stone players as they are responsible for making burrows, which other players live in.
-  3. The Painted Dog also know as the 'Cape Hunting Dog', 'Tricoloured Dog' or simply 'Wild Dog', is a highly social predator that hunts in large packs across the plains and bushland servers of Africa. They are arguably the most social of all canine builds, hunting in large packs which in past times possibly numbered in the hundreds.
-
-  Every prompt after this one is going to be names of an animal or a plant. Create a concise, at most 3 sentences, description based on the reference paragraphs after I've inputted the name.`;
-
-  await textarea.fill(initialPrompt);
-
-  await page.waitForSelector(`.absolute.p-1`);
-  const sendButton = await page.$(`.absolute.p-1`);
-
-  await page.route("**/*", (route) => route.continue());
-
-  await sendButton.click();
-
-  await page.waitForResponse(
-    (response) =>
-      response.url() === "https://chat.openai.com/backend-api/moderations" &&
-      response.status() === 200
-  );
-
-  const builds = await Build.find({});
-
-  for (const [index, build] of builds.entries()) {
-    textarea.fill(build.name);
-
-    await page.route("**/*", (route) => route.continue());
-
-    await sendButton.click();
-
-    await page.waitForResponse(
-      (response) =>
-        response.url() === "https://chat.openai.com/backend-api/moderations" &&
-        response.status() === 200
-    );
-
-    await page.waitForTimeout(30000);
-
-    await page.waitForSelector(`.markdown`);
-
-    const descriptionContainers = await page.$$(`.markdown`);
-    const descriptionContainer =
-      descriptionContainers[descriptionContainers.length - 1];
-    const descriptionElement = await descriptionContainer.$(`p`);
-    const descriptionText = await descriptionElement.textContent();
-
-    const temporaryBuilds = [...builds];
-    temporaryBuilds[index].description = descriptionText;
-    builds = temporaryBuilds;
-  }
-
-  await browser.close();
-})();
