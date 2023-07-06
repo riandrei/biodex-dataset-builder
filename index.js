@@ -7,12 +7,15 @@ const baseUrl = `https://tier-zoo.fandom.com`;
 
 (async () => {
   const browser = await firefox.launch();
+
+  // Disables JavaScript
   let context = await browser.newContext({
     javaScriptEnabled: false,
-    viewport: null,
   });
 
   let page = await context.newPage();
+
+  // Blocks images, css, and other things
   await page.route("**/*", (route) => {
     return resourceExclusions.includes(route.request().resourceType())
       ? route.abort()
@@ -20,12 +23,12 @@ const baseUrl = `https://tier-zoo.fandom.com`;
   });
 
   let nextLink = `${baseUrl}/wiki/Category:Builds`;
-
   const buildPromises = [];
 
   while (nextLink) {
     await page.goto(nextLink, { timeout: 240000 });
 
+    // Gets all build elements
     await page.waitForSelector(".category-page__member-link");
     const buildList = await page.$$(`.category-page__member-link`);
 
@@ -38,6 +41,7 @@ const baseUrl = `https://tier-zoo.fandom.com`;
         continue;
       }
 
+      // Pushes async functions to an array to run concurrently later
       buildPromises.push(
         (async () => {
           const buildPage = await context.newPage();
@@ -95,6 +99,7 @@ const baseUrl = `https://tier-zoo.fandom.com`;
       );
     }
 
+    // Tries to get the link for the next page
     try {
       await page.waitForSelector(`.category-page__pagination-next`);
       const nextButton = await page.$(`.category-page__pagination-next`);
@@ -104,15 +109,17 @@ const baseUrl = `https://tier-zoo.fandom.com`;
     }
   }
 
+  // Executes all the async functions in the buildPromises array concurrently
   await Promise.all(buildPromises);
   page.close();
   context.close();
 
-  context = await browser.newContext({
-    viewport: null,
-  });
-
+  // Utilized playwright to make descriptions of the builds from chatGPT but probably smarter to just use the API
+  // Just wanted to explore playwright more
+  context = await browser.newContext();
   page = await context.newPage();
+
+  // Blocks images, css, and other things
   await page.route("**/*", (route) => {
     return resourceExclusions.includes(route.request().resourceType())
       ? route.abort()
@@ -159,6 +166,7 @@ const baseUrl = `https://tier-zoo.fandom.com`;
 
   await waitForAndClick(page, ".absolute.p-1");
 
+  // Gets all the documents in my Build collection
   const builds = await Build.find({});
 
   for (const build of builds) {
@@ -170,6 +178,7 @@ const baseUrl = `https://tier-zoo.fandom.com`;
 
       await waitForAndClick(page, ".absolute.p-1");
 
+      // Waits for the response to a POST request after inputting a prompt to chatGPT
       await page.waitForResponse(
         (response) =>
           response.url() ===
@@ -177,16 +186,18 @@ const baseUrl = `https://tier-zoo.fandom.com`;
           response.status() === 200
       );
 
+      // Added a timer of 50s after inputting to avoid hitting the limit of prompts per hour of chatGPT which causes an error
       await page.waitForTimeout(50000);
 
+      // Gets all the element containing the responses of chatGPT and using the last element
       await page.waitForSelector(`.markdown`);
-
       const descriptionContainers = await page.$$(`.markdown`);
       const descriptionContainer =
         descriptionContainers[descriptionContainers.length - 1];
       const descriptionElement = await descriptionContainer.$(`p`);
       const description = await descriptionElement.textContent();
 
+      // Tries to update the current build with a description
       try {
         await Build.updateOne({ name: build.name }, { description });
         console.log("Description added successfully:", build.name);
